@@ -30,18 +30,31 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/api/extract", tags=["downloader"])
-async def extract_media(payload: ExtractRequest) -> dict:
-    """Resolve the given XiaoHongShu URL and return the parsed media information."""
+async def _execute_extract(url: str) -> dict:
+    """Shared logic for invoking the downloader and normalising errors."""
 
     try:
-        result = await run_in_threadpool(downloader.process, payload.url)
+        result = await run_in_threadpool(downloader.process, url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive coding for unexpected failures
         raise HTTPException(status_code=500, detail=f"Failed to process request: {exc}") from exc
 
     return result.to_dict()
+
+
+@app.post("/api/extract", tags=["downloader"])
+async def extract_media(payload: ExtractRequest) -> dict:
+    """Resolve the given XiaoHongShu URL and return the parsed media information."""
+
+    return await _execute_extract(payload.url)
+
+
+@app.get("/api/extract", tags=["downloader"])
+async def extract_media_get(url: str) -> dict:
+    """GET-compatible variant of :func:`extract_media` using a query parameter."""
+
+    return await _execute_extract(url)
 
 
 __all__ = ["app"]
