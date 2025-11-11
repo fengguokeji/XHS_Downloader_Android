@@ -23,6 +23,8 @@ MEDIA_URL_PATTERN = re.compile(
     r"https?://[\w\-._~:/?#\[\]@!$&'()*+,;=%]+\.(?:jpg|jpeg|png|gif|mp4|avi|mov|webm|wmv|f4v|swf|mpg|mpeg|asf|3gp|3g2|mkv|webp|heic|heif)",
     re.IGNORECASE,
 )
+INVALID_JSON_VALUE_PATTERN = re.compile(r":\s*(?:undefined|NaN|[+-]?Infinity)")
+UNICODE_ESCAPE_PATTERN = re.compile(r"\\u([0-9a-fA-F]{4})")
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -202,7 +204,8 @@ class XHSDownloaderAPI:
                         json_payload = json_payload[:-1]
 
                     try:
-                        root = json.loads(json_payload)
+                        normalised_payload = self._normalise_json_payload(json_payload)
+                        root = json.loads(normalised_payload)
                         note_objects = list(self._extract_note_objects(root))
                         for note in note_objects:
                             media_items, raw_urls = self._extract_media_from_note(note)
@@ -426,16 +429,98 @@ class XHSDownloaderAPI:
         return None
 
     def _extract_urls_from_html(self, html: str) -> List[str]:
+        normalised_html = self._decode_unicode_sequences(html)
+
         urls: List[str] = []
-        for match in IMG_TAG_PATTERN.finditer(html):
+        for match in IMG_TAG_PATTERN.finditer(normalised_html):
             url = match.group(1)
             if self._is_valid_media_url(url):
                 urls.append(url)
-        for match in MEDIA_URL_PATTERN.finditer(html):
+        for match in MEDIA_URL_PATTERN.finditer(normalised_html):
             url = match.group(0)
             if self._is_valid_media_url(url) and url not in urls:
                 urls.append(url)
         return urls
+
+    def _normalise_json_payload(self, payload: str) -> str:
+        """Replace JavaScript-only tokens so the payload becomes valid JSON."""
+
+        # Fast path for the common case where a simple substitution is enough.
+        if "undefined" not in payload and "Infinity" not in payload and "NaN" not in payload:
+            return payload
+
+        # First handle straightforward ``: undefined`` patterns using a regex to minimise
+        # the amount of work the slower normaliser below has to do. This keeps behaviour
+        # identical for existing payloads while still allowing us to catch occurrences in
+        # arrays or other edge-cases.
+        payload = INVALID_JSON_VALUE_PATTERN.sub(": null", payload)
+
+        tokens: List[Tuple[str, str]] = [
+            ("+Infinity", "null"),
+            ("-Infinity", "null"),
+            ("Infinity", "null"),
+            ("undefined", "null"),
+            ("NaN", "null"),
+        ]
+
+        def is_identifier(char: str) -> bool:
+            return char.isalnum() or char in {"_", "$"}
+
+        result: List[str] = []
+        in_string = False
+        escape = False
+        quote_char = ""
+        i = 0
+        length = len(payload)
+
+        while i < length:
+            ch = payload[i]
+
+            if in_string:
+                result.append(ch)
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == quote_char:
+                    in_string = False
+                i += 1
+                continue
+
+            if ch in {'"', "'"}:
+                in_string = True
+                quote_char = ch
+                result.append(ch)
+                i += 1
+                continue
+
+            replaced = False
+            for token, replacement in tokens:
+                if payload.startswith(token, i):
+                    start_index = i
+                    end_index = i + len(token)
+                    prev_char = payload[start_index - 1] if start_index > 0 else ""
+                    next_char = payload[end_index] if end_index < length else ""
+
+                    if not is_identifier(prev_char) and not is_identifier(next_char):
+                        result.append(replacement)
+                        i += len(token)
+                        replaced = True
+                        break
+
+            if replaced:
+                continue
+
+            result.append(ch)
+            i += 1
+
+        return "".join(result)
+
+    def _decode_unicode_sequences(self, text: str) -> str:
+        """Decode escaped characters often embedded in XiaoHongShu HTML payloads."""
+
+        text = text.replace("\\/", "/")
+        return UNICODE_ESCAPE_PATTERN.sub(lambda match: chr(int(match.group(1), 16)), text)
 
     def _is_valid_media_url(self, url: Optional[str]) -> bool:
         if not isinstance(url, str):
