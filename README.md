@@ -26,6 +26,32 @@
 - 本应用仅供个人学习和研究使用，下载后请于 24H 内删除
 
 
+## API 服务
+
+除了原本的 Android 客户端外，项目现在同时提供一个基于 FastAPI 的服务端实现，方便将下载能力集成到其他系统中。
+
+### 启动服务
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r api/requirements.txt
+uvicorn api.main:app --reload
+```
+
+默认会监听 `http://127.0.0.1:8000`，可以通过 `/health` 检查服务状态。
+
+### 调用示例
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/extract" \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://www.xiaohongshu.com/explore/XXXXXX"}'
+```
+
+返回结果中会包含解析到的笔记元数据、媒体资源列表以及无法解析时的回退链接，便于二次处理或下载。
+
+
 ## 常见问题
 1. **下载失败**: 请确认填入的分享链接在浏览器中能被查看
 2. **Live Photo 无效**: 合成失败会自动 fallback 成普通视频来下载；有些设备可能不支持或需要特定应用才能播放
