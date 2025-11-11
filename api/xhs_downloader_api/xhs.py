@@ -23,6 +23,8 @@ MEDIA_URL_PATTERN = re.compile(
     r"https?://[\w\-._~:/?#\[\]@!$&'()*+,;=%]+\.(?:jpg|jpeg|png|gif|mp4|avi|mov|webm|wmv|f4v|swf|mpg|mpeg|asf|3gp|3g2|mkv|webp|heic|heif)",
     re.IGNORECASE,
 )
+INVALID_JSON_VALUE_PATTERN = re.compile(r":\s*(?:undefined|NaN|[+-]?Infinity)")
+UNICODE_ESCAPE_PATTERN = re.compile(r"\\u([0-9a-fA-F]{4})")
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -202,7 +204,8 @@ class XHSDownloaderAPI:
                         json_payload = json_payload[:-1]
 
                     try:
-                        root = json.loads(json_payload)
+                        normalised_payload = self._normalise_json_payload(json_payload)
+                        root = json.loads(normalised_payload)
                         note_objects = list(self._extract_note_objects(root))
                         for note in note_objects:
                             media_items, raw_urls = self._extract_media_from_note(note)
@@ -426,16 +429,29 @@ class XHSDownloaderAPI:
         return None
 
     def _extract_urls_from_html(self, html: str) -> List[str]:
+        normalised_html = self._decode_unicode_sequences(html)
+
         urls: List[str] = []
-        for match in IMG_TAG_PATTERN.finditer(html):
+        for match in IMG_TAG_PATTERN.finditer(normalised_html):
             url = match.group(1)
             if self._is_valid_media_url(url):
                 urls.append(url)
-        for match in MEDIA_URL_PATTERN.finditer(html):
+        for match in MEDIA_URL_PATTERN.finditer(normalised_html):
             url = match.group(0)
             if self._is_valid_media_url(url) and url not in urls:
                 urls.append(url)
         return urls
+
+    def _normalise_json_payload(self, payload: str) -> str:
+        """Replace JavaScript-specific tokens so the payload can be parsed as JSON."""
+
+        return INVALID_JSON_VALUE_PATTERN.sub(": null", payload)
+
+    def _decode_unicode_sequences(self, text: str) -> str:
+        """Decode escaped characters often embedded in XiaoHongShu HTML payloads."""
+
+        text = text.replace("\\/", "/")
+        return UNICODE_ESCAPE_PATTERN.sub(lambda match: chr(int(match.group(1), 16)), text)
 
     def _is_valid_media_url(self, url: Optional[str]) -> bool:
         if not isinstance(url, str):
