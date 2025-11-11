@@ -443,9 +443,78 @@ class XHSDownloaderAPI:
         return urls
 
     def _normalise_json_payload(self, payload: str) -> str:
-        """Replace JavaScript-specific tokens so the payload can be parsed as JSON."""
+        """Replace JavaScript-only tokens so the payload becomes valid JSON."""
 
-        return INVALID_JSON_VALUE_PATTERN.sub(": null", payload)
+        # Fast path for the common case where a simple substitution is enough.
+        if "undefined" not in payload and "Infinity" not in payload and "NaN" not in payload:
+            return payload
+
+        # First handle straightforward ``: undefined`` patterns using a regex to minimise
+        # the amount of work the slower normaliser below has to do. This keeps behaviour
+        # identical for existing payloads while still allowing us to catch occurrences in
+        # arrays or other edge-cases.
+        payload = INVALID_JSON_VALUE_PATTERN.sub(": null", payload)
+
+        tokens: List[Tuple[str, str]] = [
+            ("+Infinity", "null"),
+            ("-Infinity", "null"),
+            ("Infinity", "null"),
+            ("undefined", "null"),
+            ("NaN", "null"),
+        ]
+
+        def is_identifier(char: str) -> bool:
+            return char.isalnum() or char in {"_", "$"}
+
+        result: List[str] = []
+        in_string = False
+        escape = False
+        quote_char = ""
+        i = 0
+        length = len(payload)
+
+        while i < length:
+            ch = payload[i]
+
+            if in_string:
+                result.append(ch)
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == quote_char:
+                    in_string = False
+                i += 1
+                continue
+
+            if ch in {'"', "'"}:
+                in_string = True
+                quote_char = ch
+                result.append(ch)
+                i += 1
+                continue
+
+            replaced = False
+            for token, replacement in tokens:
+                if payload.startswith(token, i):
+                    start_index = i
+                    end_index = i + len(token)
+                    prev_char = payload[start_index - 1] if start_index > 0 else ""
+                    next_char = payload[end_index] if end_index < length else ""
+
+                    if not is_identifier(prev_char) and not is_identifier(next_char):
+                        result.append(replacement)
+                        i += len(token)
+                        replaced = True
+                        break
+
+            if replaced:
+                continue
+
+            result.append(ch)
+            i += 1
+
+        return "".join(result)
 
     def _decode_unicode_sequences(self, text: str) -> str:
         """Decode escaped characters often embedded in XiaoHongShu HTML payloads."""
